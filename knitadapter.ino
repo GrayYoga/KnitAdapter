@@ -13,7 +13,7 @@ bool started = false;
 bool firstLine = true;
 bool bStep = FIRST_STEP;
 const byte ledPin = 13;
-const byte interruptPin = 2;
+const byte interruptPin = 3;
 volatile bool next_line = false;
 unsigned char link = 0;
 
@@ -135,6 +135,7 @@ void loop() {
         }
         break;
       case COMMAND_START:
+        next_line = false;
         if (!started) {
           signature[0] = inputBuf[35];
           signature[1] = inputBuf[36];
