@@ -1,12 +1,15 @@
 #include <avr/interrupt.h>
 #include <avr/io.h>
+#include <avr/eeprom.h>
 
 #define FIRST_STEP false
 #define SECOND_STEP true
 
-const unsigned char bufLen = 200;
+#define BAUD 9600
+#define UBRRn ((F_CPU/16/BAUD) - 1)
+
 unsigned char pos;
-unsigned char inputBuf[bufLen];
+unsigned char inputBuf[200];
 bool cmdComplete = false;
 bool initiated = false;
 bool started = false;
@@ -17,19 +20,29 @@ const byte interruptPin = 3;
 volatile bool next_line = false;
 unsigned char link = 0;
 
-const unsigned char COMMAND_FIND = 0x06;
-const unsigned char REQUEST_FIND[] = {COMMAND_FIND, 0xF9, 0x07, 0xF8, 0x00, 0xFF};
-const unsigned char REQUEST_FIND_LEN = 6;
+const unsigned char COMMAND_FIND_1 = 0x06;
+const unsigned char REQUEST_FIND_1[] = {COMMAND_FIND_1, 0xF9, 0x07, 0xF8, 0x00, 0xFF};
+const unsigned char REQUEST_FIND_LEN_1 = 6;
+
+const unsigned char COMMAND_FIND_2 = 0x05;
+const unsigned char REQUEST_FIND_2[] = {COMMAND_FIND_2, 0xFA, 0x06, 0xF9, 0x07, 0xF8, 0x00, 0xFF};
+const unsigned char REQUEST_FIND_LEN_2 = 8;
 
 const unsigned char RESPONSE_FIND[] = {
-  0x01, 0x41, 0x72, 0x64, 0x75, 0x69, 0x6e, 0x6f, 0x20, 0x4b, 
-  0x6e, 0x69, 0x74, 0x74, 0x20, 0x4d, 0x61, 0x63, 0x68, 0x69, 
-  0x6e, 0x65, 0x20, 0x61, 0x64, 0x61, 0x70, 0x74, 0x65, 0x72, 
-  0x0a, 0x47, 0x72, 0x61, 0x79, 0x59, 0x6f, 0x67, 0x69, 0x20, 
-  0x28, 0x63, 0x29, 0x20, 0x32, 0x30, 0x31, 0x39, 0x0a, 0x00, 
+  0x01, 0x41, 0x72, 0x64, 0x75, 0x69, 0x6e, 0x6f, 0x20, 0x4b,
+  0x6e, 0x69, 0x74, 0x74, 0x20, 0x4d, 0x61, 0x63, 0x68, 0x69,
+  0x6e, 0x65, 0x20, 0x61, 0x64, 0x61, 0x70, 0x74, 0x65, 0x72,
+  0x0a, 0x47, 0x72, 0x61, 0x79, 0x59, 0x6f, 0x67, 0x69, 0x20,
+  0x28, 0x63, 0x29, 0x20, 0x32, 0x30, 0x31, 0x39, 0x0a, 0x00,
   0xF7, 0x0D
 };
 const unsigned char RESPONSE_FIND_LEN = 52;
+
+const unsigned char COMMAND_ECHO = 0x65;
+const unsigned char REQUEST_ECHO[] = {COMMAND_ECHO, 0x63, 0x68, 0x6F};
+const unsigned char REQUEST_ECHO_LEN = 4;
+const unsigned char RESPONSE_ECHO_LEN = 8;
+const unsigned char RESPONSE_ECHO[] = {COMMAND_ECHO, 0x63, 0x68, 0x6F, ' ', 'O', 'K',  '\n'};
 
 const unsigned char COMMAND_INIT = 0x07;
 const unsigned char REQUEST_INIT[] = {COMMAND_INIT, 0xF8, 0x00, 0xFF};
@@ -38,36 +51,39 @@ const unsigned char RESPONSE_INIT_LEN = 8;
 const unsigned char RESPONSE_INIT[] = {0x08, 0x0D, 0x00, 0x31, 0x31, 0x94, 0x00, 0xF7};
 
 const unsigned char COMMAND_START = 0x01;
-unsigned char signature[2] = {0x00, 0x00};
 
+unsigned char signature[2] = {0x00, 0x00};
 unsigned char KEEP_ALIVE_1[] =  {0x08, 0x08, 0x00, 0x31, 0x32, 0x95, 0x00, 0xF7};
 const unsigned char KEEP_ALIVE_1_LEN = 8;
-
 unsigned char ADD_LINE_1[] =    {0x08, 0x13, 0x00, 0x95, 0x32, 0x95, 0x00, 0xF7};
 const unsigned char ADD_LINE_1_LEN = 8;
 
 unsigned char KEEP_ALIVE_2[] =  {0x08, 0x02, 0x00, 0x95, 0x32, 0x95, 0x00, 0xF7};
 const unsigned char KEEP_ALIVE_2_LEN = 8;
-
 unsigned char ADD_LINE_2[] =    {0x08, 0x19, 0x00, 0x32, 0x32, 0x95, 0x00, 0xF7};
 const unsigned char ADD_LINE_2_LEN = 8;
 
 void setup() {
+  cli();
   pos = 0;
   pinMode(ledPin, OUTPUT);  // pin 13 as output
   pinMode(interruptPin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(interruptPin), int0_callback, FALLING);
-
-  UBRR0 = 103; // baud rate of 9600bps
+  UCSR0A = 0;
+  UCSR0B = 0;
+  UCSR0C = 0;
+  UBRR0H = (unsigned char)(UBRRn >> 8); // UART setup
+  UBRR0L = (unsigned char)UBRRn;
   UCSR0C |= (1 << UCSZ01) | (1 << UCSZ00);
   // Use 8-bit character sizes
   UCSR0B |= (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
+  UCSR0A = (0 << U2X0);
   sei();
 }
 
 void int0_callback() {
   static unsigned long millis_prev;
-  if(millis()-250 > millis_prev) next_line = true;   // устранение дребезга
+  if (millis() - 250 > millis_prev) next_line = true; // устранение дребезга
   millis_prev = millis();
 }
 
@@ -84,7 +100,11 @@ bool isRequestInit(unsigned char * request) {
 }
 
 bool isRequestFind(unsigned char * request) {
-  return isRequestValid(request, REQUEST_FIND, REQUEST_FIND_LEN);
+  return isRequestValid(request, REQUEST_FIND_1, REQUEST_FIND_LEN_1) || isRequestValid(request, REQUEST_FIND_2, REQUEST_FIND_LEN_2);
+}
+
+bool isRequestEcho(unsigned char * request) {
+  return isRequestValid(request, REQUEST_ECHO, REQUEST_ECHO_LEN);
 }
 
 void keepAlive() {
@@ -118,10 +138,23 @@ void addLine() {
     SerialWrite(ADD_LINE_2, ADD_LINE_2_LEN);
   }
 }
+
 void loop() {
+//  SerialWrite(inputBuf, 1);
+  
   if (cmdComplete) {
     switch (inputBuf[0]) {
-      case COMMAND_FIND:
+      case COMMAND_ECHO:
+        if (isRequestEcho(inputBuf)) {
+          SerialWrite(RESPONSE_ECHO, RESPONSE_ECHO_LEN);
+        }
+        break;
+      case COMMAND_FIND_1:
+        if (isRequestFind(inputBuf)) {
+          SerialWrite(RESPONSE_FIND, RESPONSE_FIND_LEN);
+        }
+        break;
+      case COMMAND_FIND_2:
         if (isRequestFind(inputBuf)) {
           SerialWrite(RESPONSE_FIND, RESPONSE_FIND_LEN);
         }
@@ -135,7 +168,6 @@ void loop() {
         }
         break;
       case COMMAND_START:
-        next_line = false;
         if (!started) {
           signature[0] = inputBuf[35];
           signature[1] = inputBuf[36];
@@ -156,10 +188,10 @@ void loop() {
     if (!next_line) {
       keepAlive();
       // если после новой линии не получили ответ от компьютера, сбрасываем состояние адаптера к ожиданию связи
-//      if (link != 0) {
-//        initiated = false;
-//        started = false;
-//      }
+      //      if (link != 0) {
+      //        initiated = false;
+      //        started = false;
+      //      }
       digitalWrite(ledPin, LOW);
     } else {
       addLine();
@@ -195,6 +227,9 @@ ISR(USART_RX_vect, ISR_BLOCK)
     cmdComplete = true;
   }
   if (started && buf == 0xFE) {
+    cmdComplete = true;
+  }
+  if (!started && !initiated && buf == 0x6F) {
     cmdComplete = true;
   }
 }
