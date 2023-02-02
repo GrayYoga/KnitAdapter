@@ -6,51 +6,60 @@
 #define SECOND_STEP true
 
 #define BAUD 9600
-#define UBRRn ((F_CPU/16/BAUD) - 1)
+#define UBRRn (F_CPU/16/BAUD - 1)
 
-unsigned char pos;
-unsigned char inputBuf[200];
-bool cmdComplete = false;
-bool initiated = false;
-bool started = false;
+volatile unsigned char pos = 0, prevpos = 0;
+volatile unsigned char inputBuf[200];
+volatile bool cmdComplete = false;
+volatile bool initiated = false;
+volatile bool started = false;
+volatile bool DTR = false;
 bool firstLine = true;
 bool bStep = FIRST_STEP;
 const byte ledPin = 13;
-const byte interruptPin = 3;
+const byte COUNTER_PIN = 3;
+const byte DTR_PIN = 2;
+const byte DEBUG_PIN = 10; // oscilloscope debug 
 volatile bool next_line = false;
 unsigned char link = 0;
 
-const unsigned char COMMAND_FIND_1 = 0x06;
-const unsigned char REQUEST_FIND_1[] = {COMMAND_FIND_1, 0xF9, 0x07, 0xF8, 0x00, 0xFF};
-const unsigned char REQUEST_FIND_LEN_1 = 6;
+// const unsigned char FIND_SEQUENCE_END = 0xFF;
+const unsigned char FIND_SEQUENCE_END = 0xF9;
 
-const unsigned char COMMAND_FIND_2 = 0x05;
-const unsigned char REQUEST_FIND_2[] = {COMMAND_FIND_2, 0xFA, 0x06, 0xF9, 0x07, 0xF8, 0x00, 0xFF};
-const unsigned char REQUEST_FIND_LEN_2 = 8;
+// 05 fa 06 f9 07 f8 00 ff
+const unsigned char COMMAND_FIND = 0x05;
+// const unsigned char REQUEST_FIND[] = {COMMAND_FIND, 0xFA, 0x06, 0xF9, 0x07, 0xF8, 0x00, FIND_SEQUENCE_END};
+const unsigned char REQUEST_FIND[] = {COMMAND_FIND, 0xFA, 0x06, FIND_SEQUENCE_END};
+// const unsigned char REQUEST_FIND_LEN = 8;
+const unsigned char REQUEST_FIND_LEN = 4;
 
 const unsigned char RESPONSE_FIND[] = {
-  0x01, 0x41, 0x72, 0x64, 0x75, 0x69, 0x6e, 0x6f, 0x20, 0x4b,
-  0x6e, 0x69, 0x74, 0x74, 0x20, 0x4d, 0x61, 0x63, 0x68, 0x69,
-  0x6e, 0x65, 0x20, 0x61, 0x64, 0x61, 0x70, 0x74, 0x65, 0x72,
-  0x0a, 0x47, 0x72, 0x61, 0x79, 0x59, 0x6f, 0x67, 0x69, 0x20,
-  0x28, 0x63, 0x29, 0x20, 0x32, 0x30, 0x31, 0x39, 0x0a, 0x00,
-  0xF7, 0x0D
+  0x0D, 0x01, 0x41, 0x72, 0x64, 0x75, 0x69, 0x6e, 0x6f, 0x20, 
+  0x4b, 0x6e, 0x69, 0x74, 0x74, 0x20, 0x4d, 0x61, 0x63, 0x68,
+  0x69, 0x6e, 0x65, 0x20, 0x61, 0x64, 0x61, 0x70, 0x74, 0x65,
+  0x72, 0x0a, 0x47, 0x72, 0x61, 0x79, 0x59, 0x6f, 0x67, 0x69,
+  0x20, 0x28, 0x63, 0x29, 0x20, 0x32, 0x30, 0x31, 0x39, 0x08,
+  0x0d, 0x00, 0x31, 0x31, 0x94, 0x00, 0xf7
 };
-const unsigned char RESPONSE_FIND_LEN = 52;
+const unsigned char RESPONSE_FIND_LEN = 57;
 
 const unsigned char COMMAND_ECHO = 0x65;
-const unsigned char REQUEST_ECHO[] = {COMMAND_ECHO, 0x63, 0x68, 0x6F};
+const unsigned char COMMAND_ECHO_END = 0x6F;
+
+const unsigned char REQUEST_ECHO[] = {COMMAND_ECHO, 0x63, 0x68, COMMAND_ECHO_END};
 const unsigned char REQUEST_ECHO_LEN = 4;
 const unsigned char RESPONSE_ECHO_LEN = 8;
-const unsigned char RESPONSE_ECHO[] = {COMMAND_ECHO, 0x63, 0x68, 0x6F, ' ', 'O', 'K',  '\n'};
+const unsigned char RESPONSE_ECHO[] = {COMMAND_ECHO, 0x63, 0x68, COMMAND_ECHO_END, ' ', 'O', 'K',  '\n'};
 
 const unsigned char COMMAND_INIT = 0x07;
-const unsigned char REQUEST_INIT[] = {COMMAND_INIT, 0xF8, 0x00, 0xFF};
+const unsigned char COMMAND_INIT_END = 0xFF;
+const unsigned char REQUEST_INIT[] = {COMMAND_INIT, 0xF8, 0x00, COMMAND_INIT_END};
 const unsigned char REQUEST_INIT_LEN = 4;
 const unsigned char RESPONSE_INIT_LEN = 8;
 const unsigned char RESPONSE_INIT[] = {0x08, 0x0D, 0x00, 0x31, 0x31, 0x94, 0x00, 0xF7};
 
 const unsigned char COMMAND_START = 0x01;
+const unsigned char COMMAND_START_END = 0xFD;
 
 unsigned char signature[2] = {0x00, 0x00};
 unsigned char KEEP_ALIVE_1[] =  {0x08, 0x08, 0x00, 0x31, 0x32, 0x95, 0x00, 0xF7};
@@ -66,41 +75,61 @@ const unsigned char ADD_LINE_2_LEN = 8;
 void setup() {
   cli();
   pos = 0;
-  pinMode(ledPin, OUTPUT);  // pin 13 as output
-  pinMode(interruptPin, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(interruptPin), int0_callback, FALLING);
+  for (int i = 0; i < 200; i++) inputBuf[i] = 0;
+  pinMode(ledPin, OUTPUT);
+  pinMode(COUNTER_PIN, INPUT_PULLUP);
+  pinMode(DTR_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(COUNTER_PIN), int0_callback, FALLING);
   UCSR0A = 0;
   UCSR0B = 0;
   UCSR0C = 0;
-  UBRR0H = (unsigned char)(UBRRn >> 8); // UART setup
+  UBRR0H = (unsigned char)(UBRRn >> 8);
   UBRR0L = (unsigned char)UBRRn;
   UCSR0C |= (1 << UCSZ01) | (1 << UCSZ00);
   // Use 8-bit character sizes
   UCSR0B |= (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
   UCSR0A = (0 << U2X0);
   sei();
+  while (!Serial) {
+    ; // wait for serial port to connect. Needed for native USB port only
+  }
 }
 
 void int0_callback() {
-  static unsigned long millis_prev;
-  if (millis() - 250 > millis_prev) next_line = true; // устранение дребезга
-  millis_prev = millis();
+  static unsigned long millis_prev, cur_millis;
+  cur_millis = millis();  
+  if ((cur_millis - 250) > millis_prev) next_line = true; // устранение дребезга
+  millis_prev = cur_millis;
 }
 
-bool isRequestValid(unsigned char * request, const unsigned char * expect, int len) {
-  for (int i = 0; i < len; i++) {
+bool isRequestValid(unsigned char * request, const unsigned char * expect, unsigned char len) {
+  for (unsigned char i = 0; i < len; i++) {
     if (request[i] != expect[i])
       return false;
   }
   return true;
 }
 
+unsigned char reversedRequestValid(unsigned char * request, unsigned char real_len, const unsigned char * expect, unsigned char expected_len) {
+  unsigned char len = expected_len;
+  if (real_len < expected_len) {
+    len = real_len;
+  }
+  unsigned char i = 0;
+  for (i = 0; i < len; i--) {
+    if (request[--real_len] != expect[--expected_len])
+      break;
+  }
+  return i;
+}
+
 bool isRequestInit(unsigned char * request) {
   return isRequestValid(request, REQUEST_INIT, REQUEST_INIT_LEN);
 }
 
-bool isRequestFind(unsigned char * request) {
-  return isRequestValid(request, REQUEST_FIND_1, REQUEST_FIND_LEN_1) || isRequestValid(request, REQUEST_FIND_2, REQUEST_FIND_LEN_2);
+bool isRequestFindReverseCheck(unsigned char * request, unsigned char len) {
+  byte result = reversedRequestValid(request, len, REQUEST_FIND, REQUEST_FIND_LEN);
+  return result > 1;
 }
 
 bool isRequestEcho(unsigned char * request) {
@@ -140,30 +169,21 @@ void addLine() {
 }
 
 void loop() {
-//  SerialWrite(inputBuf, 1);
-  
-  if (cmdComplete) {
+  if (isRequestFindReverseCheck(inputBuf, pos)){
+    SerialWrite(RESPONSE_FIND, RESPONSE_FIND_LEN);
+    pos = 0;
+  } else if (cmdComplete) {
     switch (inputBuf[0]) {
       case COMMAND_ECHO:
         if (isRequestEcho(inputBuf)) {
           SerialWrite(RESPONSE_ECHO, RESPONSE_ECHO_LEN);
         }
         break;
-      case COMMAND_FIND_1:
-        if (isRequestFind(inputBuf)) {
-          SerialWrite(RESPONSE_FIND, RESPONSE_FIND_LEN);
-        }
-        break;
-      case COMMAND_FIND_2:
-        if (isRequestFind(inputBuf)) {
-          SerialWrite(RESPONSE_FIND, RESPONSE_FIND_LEN);
-        }
-        break;
       case COMMAND_INIT:
         if (isRequestInit(inputBuf)) {
           SerialWrite(RESPONSE_INIT, RESPONSE_INIT_LEN);
-          delay(500);
-          SerialWrite(RESPONSE_INIT, RESPONSE_INIT_LEN);
+          // delay(500);
+          // SerialWrite(RESPONSE_INIT, RESPONSE_INIT_LEN);
           initiated = true;
         }
         break;
@@ -173,13 +193,13 @@ void loop() {
           signature[1] = inputBuf[36];
           started = true;
         }
-        else {
-          link = 0;
-        }
         break;
       default:
+        pos = 0;
+        cmdComplete = false;
         break;
     }
+
     pos = 0;
     cmdComplete = false;
   }
@@ -187,19 +207,15 @@ void loop() {
     delay(400);
     if (!next_line) {
       keepAlive();
-      // если после новой линии не получили ответ от компьютера, сбрасываем состояние адаптера к ожиданию связи
-      //      if (link != 0) {
-      //        initiated = false;
-      //        started = false;
-      //      }
       digitalWrite(ledPin, LOW);
     } else {
       addLine();
       link = 1;
-      next_line = false;
+      next_line = !next_line;
       digitalWrite(ledPin, HIGH);
     }
-  }
+  } 
+  digitalWrite(ledPin, LOW);
 }
 
 void SerialWrite(const unsigned char * buf, int len) {
@@ -218,18 +234,18 @@ void USARTWriteChar(char data)
 
 ISR(USART_RX_vect, ISR_BLOCK)
 {
-  unsigned char buf = UDR0;// read the received data byte in temp
+  unsigned char buf = UDR0;
   inputBuf[pos++] = buf;
-  if (buf == 0xFF) {
+  if (buf == COMMAND_INIT_END) {
     cmdComplete = true;
   }
-  if (initiated && buf == 0xFD) {
+  if (initiated && buf == COMMAND_START_END) {  
     cmdComplete = true;
   }
-  if (started && buf == 0xFE) {
+  if (started && buf == 0xFE) {  // cmd stop (?)
     cmdComplete = true;
   }
-  if (!started && !initiated && buf == 0x6F) {
+  if (!started && !initiated && buf == COMMAND_ECHO_END) {
     cmdComplete = true;
   }
 }
