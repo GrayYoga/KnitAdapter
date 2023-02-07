@@ -57,11 +57,12 @@ const unsigned char REQUEST_INIT[] = {COMMAND_INIT, 0xF8, 0x00, COMMAND_INIT_END
 const unsigned char REQUEST_INIT_LEN = 4;
 const unsigned char RESPONSE_INIT_LEN = 8;
 const unsigned char RESPONSE_INIT[] = {0x08, 0x0D, 0x00, 0x31, 0x31, 0x94, 0x00, 0xF7};
-
+// 08 8d 40  31 31 94 00 f7
 const unsigned char COMMAND_START = 0x01;
 const unsigned char COMMAND_START_END = 0xFD;
 
 unsigned char signature[2] = {0x00, 0x00};
+
 unsigned char KEEP_ALIVE_1[] =  {0x08, 0x08, 0x00, 0x31, 0x32, 0x95, 0x00, 0xF7};
 const unsigned char KEEP_ALIVE_1_LEN = 8;
 unsigned char ADD_LINE_1[] =    {0x08, 0x13, 0x00, 0x95, 0x32, 0x95, 0x00, 0xF7};
@@ -210,8 +211,8 @@ void loop() {
       digitalWrite(ledPin, LOW);
     } else {
       addLine();
-      link = 1;
       next_line = !next_line;
+      link = 1;
       digitalWrite(ledPin, HIGH);
     }
   } 
@@ -240,6 +241,7 @@ ISR(USART_RX_vect, ISR_BLOCK)
     cmdComplete = true;
   }
   if (initiated && buf == COMMAND_START_END) {  
+    next_line = false;
     cmdComplete = true;
   }
   if (started && buf == 0xFE) {  // cmd stop (?)
